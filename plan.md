@@ -79,10 +79,10 @@ Gravity + one flap impulse. +1 per tower passed. Brutally simple, dark, spooky.
 - [ ] Bats (2–3, L2), lightning flash (15–25 s cadence, 2–4 frames, not in first 10 s)
 - [ ] Contrast check: crow readable at all gap positions
 
-## [ ] Phase 3 — Audio (procedural WebAudio)
-- [ ] Flap swish, score chime (bone-like), hit thud + sting, die whistle
-- [ ] Ambient: wind loop, distant thunder, rare caw (low-passed, quiet)
-- [ ] Mute toggle (M key + UI), resume AudioContext on first user gesture
+## [x] Phase 3 — Audio (procedural WebAudio)
+- [x] Flap swish, score chime (bone-like), hit thud + sting, die whistle
+- [x] Ambient: wind loop, distant thunder, rare caw (low-passed, quiet)
+- [x] Mute toggle (M key + UI), resume AudioContext on first user gesture
 
 ## [ ] Phase 4 — Polish
 - [ ] Death flash `#B8C4D6` (1 frame), crow tumbles to ground before panel

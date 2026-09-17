@@ -191,11 +191,14 @@ function startPlay() {
 function flap() {
   // Flap SETS velocity — never adds (double-tap ceiling-launch guard).
   game.crow.vy = FLAP_VY;
+  CrowAudio.flap();
 }
 
 function die() {
   game.state = ST_DYING;
   game.flash = 1; // 1-frame cold flash
+  CrowAudio.hit();
+  CrowAudio.die();
 }
 
 function targetRotation(vy) {
@@ -237,6 +240,7 @@ function update() {
         if (!t.passed && t.x + TOWER_W < CROW_X) {
           t.passed = true;
           game.score++;
+          CrowAudio.score();
           if (game.score > game.best) {
             game.best = game.score;
             saveBest(game.best);
@@ -288,13 +292,17 @@ function onInput() {
 }
 
 window.addEventListener("keydown", (e) => {
+  CrowAudio.unlock(); // first user gesture: create/resume AudioContext
   if (e.code === "Space") {
     e.preventDefault();
     if (!e.repeat) onInput();
+  } else if (e.code === "KeyM") {
+    CrowAudio.toggleMute();
   }
 });
 window.addEventListener("pointerdown", (e) => {
   e.preventDefault();
+  CrowAudio.unlock();
   onInput();
 });
 
@@ -349,6 +357,14 @@ function drawHUD() {
   }
 }
 
+function drawMuteIndicator() {
+  // Small always-on mute state, top-left (M toggles).
+  ctx.font = "10px monospace";
+  ctx.textAlign = "left";
+  ctx.fillStyle = CrowAudio.isMuted() ? "#8F8A9E" : "rgba(255,255,255,0.35)";
+  ctx.fillText(CrowAudio.isMuted() ? "MUTED (M)" : "SOUND (M)", 4, 12);
+}
+
 function drawGameOver() {
   if (game.state !== ST_GAMEOVER) return;
   ctx.fillStyle = "rgba(0,0,0,0.55)";
@@ -368,6 +384,7 @@ function draw() {
   drawGround();
   drawCrow();
   drawHUD();
+  drawMuteIndicator();
   drawGameOver();
   if (game.flash > 0) {
     ctx.fillStyle = "#B8C4D6"; // 1-frame cold death flash
@@ -389,6 +406,7 @@ function frame(now) {
     update();
     acc -= STEP;
   }
+  CrowAudio.tick(); // ambient scheduler (thunder / far caw)
   draw();
   requestAnimationFrame(frame);
 }
