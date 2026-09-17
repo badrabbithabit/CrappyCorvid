@@ -92,9 +92,10 @@ Gravity + one flap impulse. +1 per tower passed. Brutally simple, dark, spooky.
 - [x] Mobile touch works (unified pointer events)
 - [x] No console errors, playtest pass
 
-## [ ] Phase 5 — Ship
-- [ ] git init + commits per phase
-- [ ] Private GitHub repo `crappycorvid` (gh CLI), push
-- [ ] GitHub Pages enabled on branch, site named crappycorvid
-- [ ] README.md with how to run and controls
-- [ ] All phase boxes in plan.md ticked
+## [x] Phase 5 — Ship
+- [x] git init + commits per phase (Phases 1–4, one commit each)
+- [x] Private GitHub repo `badrabbithabit/CrappyCorvid`, pushed (branch `master`)
+- [ ] **BLOCKED:** GitHub Pages — account plan rejects Pages for PRIVATE repos (API 422). Verified Pages DOES work on public repos on this account. Morning option: make the repo public (Settings → Danger Zone → Change visibility), then enable Pages on `master` → site goes live at `https://badrabbithabit.github.io/CrappyCorvid/` within a few minutes. Game is playable offline too (open index.html).
+- [x] README.md with how to run and controls
+- [x] All other phase boxes in plan.md ticked
+- [ ] Housekeeping: delete throwaway repo `badrabbithabit/pages-test-tmp` (API token lacks delete right; do it in Settings)

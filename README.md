@@ -60,3 +60,5 @@ plan.md         design plan and phase checklist
 - Code, art (all procedural — no image assets), and audio (all synthesized —
   no audio assets): this repository.
 - Inspired by the flappy-bird genre; the name is an affectionate nod to it.
+
+> **Hosting note:** GitHub Pages is disabled for this repo because the GitHub account plan does not allow Pages on *private* repos. Making the repo public + enabling Pages (branch `master`) serves it at `badrabbithabit.github.io/CrappyCorvid/`. Until then, just open `index.html`.
