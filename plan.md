@@ -84,13 +84,13 @@ Gravity + one flap impulse. +1 per tower passed. Brutally simple, dark, spooky.
 - [x] Ambient: wind loop, distant thunder, rare caw (low-passed, quiet)
 - [x] Mute toggle (M key + UI), resume AudioContext on first user gesture
 
-## [ ] Phase 4 — Polish
-- [ ] Death flash `#B8C4D6` (1 frame), crow tumbles to ground before panel
-- [ ] Game-over panel with medal tiers (10/20/30) in eerie green, best score
-- [ ] Pause on window blur
-- [ ] First-3-pipes grace gap (+25%)
-- [ ] Mobile touch works (unified pointer events)
-- [ ] No console errors, playtest pass
+## [x] Phase 4 — Polish
+- [x] Death flash `#B8C4D6` (1 frame), crow tumbles to ground before panel
+- [x] Game-over panel with medal tiers (10/20/30) in eerie green, best score
+- [x] Pause on window blur
+- [x] First-3-pipes grace gap (+25%)
+- [x] Mobile touch works (unified pointer events)
+- [x] No console errors, playtest pass
 
 ## [ ] Phase 5 — Ship
 - [ ] git init + commits per phase

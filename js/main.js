@@ -1,10 +1,12 @@
 /*
- * Crappy Corvid — Phase 1: core engine (playable, ugly).
+ * Crappy Corvid — core engine + Phase 4 polish.
  *
- * Plain vanilla JS, fixed 60 Hz timestep, placeholder graphics only.
- * Render is split into layer functions (drawBackground / drawTowers /
- * drawGround / drawCrow / drawHUD) so Phase 2 can swap in the real theme
- * without touching physics or state logic.
+ * Plain vanilla JS, fixed 60 Hz timestep. Render is split into layer
+ * functions (drawBackground / drawTowers / drawGround / drawCrow / drawHUD)
+ * so the scene theme can be swapped in without touching physics or state
+ * logic. Phase 4 adds: HiDPI-crisp scaling, 1-frame death flash + tumble,
+ * stone game-over panel with medal tiers, first-3-towers grace gap, pause
+ * on window blur, and unified pointer input (touch works out of the box).
  */
 "use strict";
 
@@ -17,11 +19,20 @@ const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 ctx.imageSmoothingEnabled = false;
 
-// Scale the canvas with CSS to fit the window, preserving the 288x512 logical space.
+// Scale the canvas with CSS to fit the window, preserving the 288x512
+// logical space. The backing store is sized by devicePixelRatio (capped at
+// 3) so the game renders crisp on HiDPI screens instead of blurry (Phase 4).
 function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
   const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
   canvas.style.width = Math.floor(W * scale) + "px";
   canvas.style.height = Math.floor(H * scale) + "px";
+  const px = Math.max(1, Math.round(scale * dpr)); // backing-store scale
+  canvas.width = W * px;
+  canvas.height = H * px;
+  // All drawing below stays in 288x512 logical units.
+  ctx.setTransform(px, 0, 0, px, 0, 0);
+  ctx.imageSmoothingEnabled = false; // resizing resets context state; re-apply
 }
 window.addEventListener("resize", resize);
 resize();
@@ -55,11 +66,13 @@ const FIRST_TOWER_X = W + 80; // ~2.1 s of grace at 2.5 px/f after first flap
 const GROUND_H = 80;
 const GROUND_Y = H - GROUND_H;
 
-// Gap center: uniform random, clamped so both caps stay on-screen with margin.
-// (Plan: e.g. 200 px from top to height-100; we use the same intent in
-// concrete terms: gap top >= 60 px from top, gap bottom >= 10 px above ground.)
-const GAP_MIN_CENTER = 60 + GAP / 2;                 // 105
-const GAP_MAX_CENTER = GROUND_Y - GAP / 2 - 10;      // 369
+// Gap center: uniform random, clamped so both caps stay on-screen with
+// margin (gap top >= 60 px from the top, gap bottom >= 10 px above ground).
+//
+// GRACE (Phase 4): the first GRACE_TOWERS towers of every run get a
+// +GRACE_GAP_MULT gap so a fresh run eases in before full difficulty hits.
+const GRACE_TOWERS = 3;
+const GRACE_GAP_MULT = 1.25; // 90 px gap -> 112.5 px for the first three
 
 const RESTART_LOCKOUT = 250; // ms, prevents accidental instant restart
 
@@ -85,6 +98,7 @@ const game = {
   towers: [],
   score: 0,
   best: 0,
+  runTowers: 0,     // towers spawned this run (drives the grace gap)
   readyT: 0,          // frames in READY, for the bob
   groundOffset: 0,   // scroll phase for the ground layer
   gameOverAt: 0,     // ms timestamp when GAME OVER panel appeared
@@ -115,6 +129,7 @@ function resetGame() {
   game.crow.rot = 0;
   game.towers.length = 0;
   game.score = 0;
+  game.runTowers = 0; // grace gap restarts every run
   game.readyT = 0;
   game.flash = 0;
 }
@@ -125,11 +140,17 @@ resetGame();
 // ---------------------------------------------------------------- towers
 
 function makeTower(x) {
-  const center = GAP_MIN_CENTER + Math.random() * (GAP_MAX_CENTER - GAP_MIN_CENTER);
+  // Grace: first GRACE_TOWERS towers of the run get the wider gap.
+  const gap = game.runTowers < GRACE_TOWERS ? GAP * GRACE_GAP_MULT : GAP;
+  const minCenter = 60 + gap / 2;
+  const maxCenter = GROUND_Y - gap / 2 - 10;
+  const center = minCenter + Math.random() * (maxCenter - minCenter);
+  game.runTowers++;
   return {
     x,
-    topH: center - GAP / 2,  // height of the upper cap
-    botY: center + GAP / 2,  // y of the bottom edge of the gap
+    gap,
+    topH: center - gap / 2,  // height of the upper cap
+    botY: center + gap / 2,  // y of the bottom edge of the gap
     passed: false,
   };
 }
@@ -209,13 +230,17 @@ function targetRotation(vy) {
 }
 
 function update() {
-  // Scroll phase for the ground (same speed as towers, always in motion
-  // after the first flap; in READY it creeps for a live feel).
-  game.groundOffset = (game.groundOffset + SCROLL) % 64;
+  // Flash countdown at the TOP: die() (called further down, from
+  // checkCollisions) sets flash=1, and it must survive to this frame's
+  // draw() — decrementing after the switch would eat the flash on the
+  // very update that sets it, so the 1-frame flash would never render.
+  if (game.flash > 0) game.flash--;
 
   const c = game.crow;
   switch (game.state) {
     case ST_READY: {
+      // Ground creeps in READY for a live feel (same speed as towers).
+      game.groundOffset = (game.groundOffset + SCROLL) % 64;
       // Bobbing crow, no physics/pipe updates (first-flap gate).
       game.readyT++;
       c.y = H * 0.42 + Math.sin(game.readyT / 10) * 8;
@@ -224,6 +249,8 @@ function update() {
     }
 
     case ST_PLAYING: {
+      // Ground scrolls at exactly SCROLL px/f — same as the towers.
+      game.groundOffset = (game.groundOffset + SCROLL) % 64;
       c.vy = Math.min(c.vy + GRAVITY, TERMINAL_VY);
       c.y += c.vy;
       // Smooth the rotation sell toward the target.
@@ -270,13 +297,12 @@ function update() {
     case ST_GAMEOVER:
       break;
   }
-
-  if (game.flash > 0) game.flash--;
 }
 
 // ---------------------------------------------------------------- input
 
 function onInput() {
+  if (paused) return; // never take input while blurred/paused
   switch (game.state) {
     case ST_READY:
       startPlay();
@@ -307,8 +333,25 @@ window.addEventListener("pointerdown", (e) => {
 });
 
 // ---------------------------------------------------------------- render
-// Placeholder graphics only — each layer is its own function so Phase 2
-// can replace the body without touching the frame loop.
+// Each layer is its own function so the scene theme can be replaced
+// without touching the frame loop. UI elements use the Phase 4 palette:
+// eerie green #7CFC8B with glow, stone #1C1633 / edge #4A3F6B / mortar
+// #0E0A1C, bone-white #E8E3D0, dim stone-grey #8F8A9E.
+
+// Eerie green (Phase 4) — the glow accent for score/medals/hints.
+const GREEN = "#7CFC8B";
+
+function glowText(text, x, y, font, alpha) {
+  ctx.font = font;
+  ctx.textAlign = "center";
+  ctx.globalAlpha = alpha !== undefined ? alpha : 1;
+  ctx.fillStyle = GREEN;
+  ctx.shadowColor = GREEN;
+  ctx.shadowBlur = 10;
+  ctx.fillText(text, x, y);
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+}
 
 function drawBackground() {
   // Placeholder: flat dark fill. (Phase 2: sky gradient, moon, stars, parallax.)
@@ -347,13 +390,13 @@ function drawCrow() {
 }
 
 function drawHUD() {
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "bold 24px monospace";
-  ctx.textAlign = "center";
   if (game.state === ST_READY) {
-    ctx.fillText("tap / space to flap", W / 2, 100);
+    // "tap to flap" hint (Phase 4), gently pulsing.
+    const a = 0.6 + 0.4 * Math.sin(performance.now() / 350);
+    glowText("tap to flap", W / 2, 120, "bold 18px monospace", a);
+    if (game.best > 0) glowText("best " + game.best, W / 2, 146, "12px monospace", 0.7);
   } else {
-    ctx.fillText(String(game.score), W / 2, 60);
+    glowText(String(game.score), W / 2, 56, "bold 24px monospace");
   }
 }
 
@@ -365,17 +408,122 @@ function drawMuteIndicator() {
   ctx.fillText(CrowAudio.isMuted() ? "MUTED (M)" : "SOUND (M)", 4, 12);
 }
 
+// ---- game-over panel (Phase 4) ------------------------------------------
+// Dark stone slab: stone face #1C1633 over a moonlit edge #4A3F6B with
+// crenellations and staggered mortar joints in #0E0A1C. Score + best glow
+// eerie green. Appears only AFTER the crow has tumbled to the ground
+// (the DYING state handles the fall).
+
+function drawStonePanel(x, y, w, h) {
+  ctx.fillStyle = "#4A3F6B"; // moonlit slab edge
+  ctx.fillRect(x - 3, y - 3, w + 6, h + 6);
+  for (let cx = x - 3; cx < x + w; cx += 24) ctx.fillRect(cx, y - 9, 14, 6); // crenellations
+  ctx.fillStyle = "#1C1633"; // stone face
+  ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = "#0E0A1C"; // staggered mortar joints
+  for (let r = 1, rowY = y + 26; rowY < y + h; r++, rowY += 26) {
+    ctx.fillRect(x, rowY, w, 2);
+    for (let mx = x + (r % 2 ? 30 : 0); mx < x + w; mx += 60) {
+      ctx.fillRect(mx, rowY - 26, 2, 26);
+    }
+  }
+}
+
+// Medal tiers (Phase 4): 30+ corvid crown, 20+ raven feather, 10+ bone.
+// Simple procedural icons in glowing green inside a medallion ring.
+function drawMedal(score, cx, cy) {
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.strokeStyle = GREEN;
+  ctx.fillStyle = GREEN;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = GREEN;
+  ctx.shadowBlur = 8;
+  ctx.beginPath();
+  ctx.arc(0, 0, 20, 0, Math.PI * 2);
+  ctx.stroke();
+  if (score >= 30) {
+    // Corvid crown: three-spike silhouette on a band.
+    ctx.beginPath();
+    ctx.moveTo(-9, 6); ctx.lineTo(-9, -3); ctx.lineTo(-4, 1); ctx.lineTo(0, -8);
+    ctx.lineTo(4, 1); ctx.lineTo(9, -3); ctx.lineTo(9, 6);
+    ctx.closePath();
+    ctx.stroke();
+  } else if (score >= 20) {
+    // Raven feather: curved quill with barbs.
+    ctx.beginPath();
+    ctx.moveTo(-7, 8);
+    ctx.quadraticCurveTo(2, 4, 8, -8);
+    ctx.stroke();
+    for (let i = 0; i < 4; i++) {
+      const t = 0.3 + i * 0.2;
+      const qx = -7 + t * 15, qy = 8 - t * 16;
+      ctx.beginPath();
+      ctx.moveTo(qx, qy);
+      ctx.lineTo(qx + 5, qy - 1);
+      ctx.stroke();
+    }
+  } else if (score >= 10) {
+    // Bone: bar with four knob ends.
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(-7, 0); ctx.lineTo(7, 0);
+    ctx.stroke();
+    for (const [bx, by] of [[-7, -3.5], [-7, 3.5], [7, -3.5], [7, 3.5]]) {
+      ctx.beginPath();
+      ctx.arc(bx, by, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function medalName(score) {
+  if (score >= 30) return "Corvid Crown";
+  if (score >= 20) return "Raven Feather";
+  if (score >= 10) return "Bone";
+  return null;
+}
+
 function drawGameOver() {
   if (game.state !== ST_GAMEOVER) return;
-  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillStyle = "rgba(6,4,14,0.55)";
   ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = "#ffffff";
-  ctx.font = "bold 28px monospace";
+
+  const pw = 232, ph = 216, px = (W - pw) / 2, py = 108;
+  drawStonePanel(px, py, pw, ph);
+
+  ctx.fillStyle = "#E8E3D0";
+  ctx.font = "bold 20px monospace";
   ctx.textAlign = "center";
-  ctx.fillText("GAME OVER", W / 2, H / 2 - 40);
-  ctx.font = "16px monospace";
-  ctx.fillText("score " + game.score + "   best " + game.best, W / 2, H / 2);
-  ctx.fillText("tap to restart", W / 2, H / 2 + 36);
+  ctx.fillText("GAME OVER", W / 2, py + 32);
+
+  drawMedal(game.score, W / 2, py + 82);
+  const name = medalName(game.score);
+  glowText(name ? name : "no medal (10+ for a bone)", W / 2, py + 118,
+    "11px monospace", name ? 0.95 : 0.55);
+
+  ctx.fillStyle = "rgba(232,227,208,0.6)";
+  ctx.font = "10px monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("SCORE", W / 2, py + 140);
+  glowText(String(game.score), W / 2, py + 168, "bold 30px monospace");
+  glowText("BEST " + game.best, W / 2, py + 194, "12px monospace", 0.85);
+
+  // Restart hint: only starts pulsing once the 250 ms lockout has passed.
+  const ready = performance.now() - game.gameOverAt >= RESTART_LOCKOUT;
+  glowText(ready ? "tap / space to restart" : "...", W / 2, py + ph + 26,
+    "12px monospace", ready ? 0.6 + 0.4 * Math.sin(performance.now() / 350) : 0.5);
+}
+
+function drawPauseOverlay() {
+  ctx.fillStyle = "rgba(6,4,14,0.6)";
+  ctx.fillRect(0, 0, W, H);
+  glowText("PAUSED", W / 2, H / 2 - 8, "bold 24px monospace");
+  ctx.fillStyle = "#8F8A9E";
+  ctx.font = "12px monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("refocus the window to resume", W / 2, H / 2 + 18);
 }
 
 function draw() {
@@ -392,6 +540,31 @@ function draw() {
   }
 }
 
+// ---------------------------------------------------------------- pause
+// Pause on window blur / hidden tab (Phase 4). While paused the fixed-step
+// accumulator must NOT run: acc is zeroed every frame and dt is already
+// clamped to MAX_FRAME, so there is no burst of updates on resume.
+
+let paused = false;
+
+function setPaused(p) {
+  if (p === paused) return;
+  paused = p;
+  if (!paused) { last = performance.now(); acc = 0; }
+}
+
+window.addEventListener("blur", () => {
+  if (game.state === ST_PLAYING || game.state === ST_READY) setPaused(true);
+});
+window.addEventListener("focus", () => setPaused(false));
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (game.state === ST_PLAYING || game.state === ST_READY) setPaused(true);
+  } else {
+    setPaused(false);
+  }
+});
+
 // ---------------------------------------------------------------- loop
 
 let last = performance.now();
@@ -401,13 +574,18 @@ function frame(now) {
   let dt = now - last;
   last = now;
   if (dt > MAX_FRAME) dt = MAX_FRAME; // tab switch: don't spiral
-  acc += dt;
-  while (acc >= STEP) {
-    update();
-    acc -= STEP;
+  if (paused) {
+    acc = 0; // paused: accumulator must not run (no backlog on resume)
+  } else {
+    acc += dt;
+    while (acc >= STEP) {
+      update();
+      acc -= STEP;
+    }
   }
   CrowAudio.tick(); // ambient scheduler (thunder / far caw)
   draw();
+  if (paused) drawPauseOverlay();
   requestAnimationFrame(frame);
 }
 
