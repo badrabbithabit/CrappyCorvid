@@ -100,7 +100,13 @@ const game = {
   best: 0,
   runTowers: 0,     // towers spawned this run (drives the grace gap)
   readyT: 0,          // frames in READY, for the bob
-  groundOffset: 0,   // scroll phase for the ground layer
+  worldOffset: 0,    // ONE scroll accumulator (px) driving every parallax layer
+  worldT: 0,         // frames the world has moved (bat drift phase)
+  runT: 0,           // frames since the run left READY (lightning gate)
+  crowAnimT: 0,      // wing-cycle counter (advanced while rising)
+  crowFrame: 0,      // 0 wing up / 1 level / 2 tucked
+  nextBoltAt: 0,     // runT frame at which the next lightning bolt may fire
+  boltFrames: 0,     // lightning flash frames remaining
   gameOverAt: 0,     // ms timestamp when GAME OVER panel appeared
   flash: 0,          // death-flash frames remaining (1-frame cold flash)
 };
@@ -131,6 +137,8 @@ function resetGame() {
   game.score = 0;
   game.runTowers = 0; // grace gap restarts every run
   game.readyT = 0;
+  game.crowAnimT = 0;
+  game.crowFrame = 0;
   game.flash = 0;
 }
 
@@ -152,6 +160,7 @@ function makeTower(x) {
     topH: center - gap / 2,  // height of the upper cap
     botY: center + gap / 2,  // y of the bottom edge of the gap
     passed: false,
+    seed: Math.random(), // per-tower art variation (lantern) — physics never reads this
   };
 }
 
@@ -205,6 +214,9 @@ function checkCollisions() {
 function startPlay() {
   // First flap: leave READY, give the world its grace period.
   game.state = ST_PLAYING;
+  game.runT = 0;
+  game.boltFrames = 0;
+  game.nextBoltAt = 900 + Math.floor(Math.random() * 601); // first bolt 15-25 s in
   spawnTowers();
   flap();
 }
@@ -236,23 +248,49 @@ function update() {
   // very update that sets it, so the 1-frame flash would never render.
   if (game.flash > 0) game.flash--;
 
+  // Lightning flash decays in any state (a bolt in flight never freezes
+  // half-lit when the crow dies); it can only TRIGGER while PLAYING.
+  if (game.boltFrames > 0) game.boltFrames--;
+
   const c = game.crow;
   switch (game.state) {
     case ST_READY: {
-      // Ground creeps in READY for a live feel (same speed as towers).
-      game.groundOffset = (game.groundOffset + SCROLL) % 64;
+      // World frozen in READY — towers, ground and parallax all wait for the
+      // first flap, so every layer freezes in sync.
       // Bobbing crow, no physics/pipe updates (first-flap gate).
       game.readyT++;
       c.y = H * 0.42 + Math.sin(game.readyT / 10) * 8;
       c.rot = 0;
+      game.crowFrame = 0; // hold frame 0 with the bob
       break;
     }
 
     case ST_PLAYING: {
-      // Ground scrolls at exactly SCROLL px/f — same as the towers.
-      game.groundOffset = (game.groundOffset + SCROLL) % 64;
+      // One world offset, advanced at exactly SCROLL px/f — towers, ground
+      // and every parallax layer derive their scroll from this single value.
+      game.worldOffset += SCROLL;
+      game.worldT++;
+      game.runT++;
+      // Lightning: 2-4 frame flash, cadence 15-25 s, never in the first 10 s
+      // (600 frames) of a run. nextBoltAt starts at >= 900, so the 600-frame
+      // gate is a belt-and-braces check.
+      if (game.runT >= 600 && game.runT >= game.nextBoltAt) {
+        game.boltFrames = 2 + Math.floor(Math.random() * 3); // 2..4 frames
+        game.nextBoltAt = game.runT + 900 + Math.floor(Math.random() * 601);
+        // audio.js does not expose a thunder hook yet — call it if one is
+        // added to the CrowAudio API (ambient self-schedules thunder for now).
+        if (typeof CrowAudio.thunder === "function") CrowAudio.thunder();
+      }
       c.vy = Math.min(c.vy + GRAVITY, TERMINAL_VY);
       c.y += c.vy;
+      // Wing animation: cycle up/level/tucked every ~10 frames while rising,
+      // hold the tucked frame while falling (rotation sells the fall).
+      if (c.vy < 0) {
+        game.crowAnimT++;
+        game.crowFrame = Math.floor(game.crowAnimT / 10) % 3;
+      } else {
+        game.crowFrame = 2;
+      }
       // Smooth the rotation sell toward the target.
       const target = targetRotation(c.vy);
       c.rot += (target - c.rot) * 0.2;
@@ -280,6 +318,9 @@ function update() {
     }
 
     case ST_DYING: {
+      // World keeps scrolling until the crow hits the ground.
+      game.worldOffset += SCROLL;
+      game.worldT++;
       // Crow tumbles to the ground before the game-over panel.
       c.vy = Math.min(c.vy + GRAVITY, TERMINAL_VY);
       c.y += c.vy;
@@ -332,6 +373,171 @@ window.addEventListener("pointerdown", (e) => {
   onInput();
 });
 
+// ---------------------------------------------------------------- world art
+// Phase 2 night world. Every layer scrolls from ONE accumulator,
+// game.worldOffset (advanced by SCROLL per fixed step while the world
+// moves: PLAYING, and DYING until the crow lands; frozen in READY,
+// GAME OVER and while paused). Strips are pre-rendered offscreen once;
+// shapes never cross a strip edge so wrapping is seamless.
+
+const MOON_R = 18;
+
+function makeWorldCanvas(w, h) {
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  return c;
+}
+
+// L1: a handful of static stars (fixed positions, generated once).
+const STARS = (() => {
+  const s = [];
+  for (let i = 0; i < 24; i++) {
+    s.push({
+      x: Math.random() * W,
+      y: 8 + Math.random() * 290,
+      r: Math.random() < 0.8 ? 1 : 2,
+      a: 0.25 + Math.random() * 0.55,
+    });
+  }
+  return s;
+})();
+
+// L2: far castle skyline, #151027, scrolls at 0.5x. 432 px strip.
+const L2_W = 432, L2_H = 170;
+const skyStrip = (function buildSkylineStrip() {
+  const c = makeWorldCanvas(L2_W, L2_H);
+  const g = c.getContext("2d");
+  g.fillStyle = "#151027";
+  const base = L2_H; // strip bottom = horizon
+  function wall(x, w, h) { g.fillRect(x, base - h, w, h); }
+  function cren(x, w, top) {
+    for (let cx = x; cx + 9 <= x + w; cx += 16) g.fillRect(cx, top - 6, 9, 6);
+  }
+  function spire(x, w, h, sh) {
+    wall(x, w, h);
+    g.beginPath();
+    g.moveTo(x - 3, base - h);
+    g.lineTo(x + w / 2, base - h - sh);
+    g.lineTo(x + w + 3, base - h);
+    g.closePath();
+    g.fill();
+  }
+  // Every shape stays clear of the strip edges (seam stays invisible).
+  spire(20, 26, 90, 34);
+  wall(58, 34, 62); cren(58, 34, base - 62);
+  spire(104, 20, 120, 40);
+  wall(136, 44, 74); cren(136, 44, base - 74);
+  spire(196, 24, 104, 30);
+  wall(230, 30, 56); cren(230, 30, base - 56);
+  wall(268, 50, 86); cren(268, 50, base - 86);
+  spire(332, 22, 132, 38);
+  wall(364, 40, 66); cren(364, 40, base - 66);
+  spire(412, 16, 84, 26);
+  return c;
+})();
+
+// L3: nearer battlements + dead trees, #0E0A1C, scrolls at 1.0x. 384 px strip.
+const L3_W = 384, L3_H = 110;
+const nearStrip = (function buildBattlementStrip() {
+  const c = makeWorldCanvas(L3_W, L3_H);
+  const g = c.getContext("2d");
+  const base = L3_H;
+  g.fillStyle = "#0E0A1C";
+  g.strokeStyle = "#0E0A1C";
+  g.lineCap = "round";
+  // Low crenellated wall across the bottom (clear of the strip edges).
+  const wy = base - 34;
+  g.fillRect(6, wy, L3_W - 12, 34);
+  for (let cx = 12; cx + 11 <= L3_W - 12; cx += 22) g.fillRect(cx, wy - 8, 11, 8);
+  // Two square bastion towers.
+  for (const tx of [54, 296]) {
+    g.fillRect(tx, base - 66, 34, 66);
+    for (let cx = tx + 2; cx + 11 <= tx + 34; cx += 18) g.fillRect(cx, base - 74, 11, 8);
+  }
+  // Dead trees: bare trunk with a few forked branches.
+  function tree(x, h) {
+    const top = base - h;
+    g.lineWidth = 4;
+    g.beginPath(); g.moveTo(x, base); g.lineTo(x, top); g.stroke();
+    g.lineWidth = 2;
+    const branches = [[-14, 0.45, -9], [12, 0.6, -11], [-9, 0.75, -8],
+                      [11, 0.3, -7], [-6, 0.92, -8]];
+    for (const [dx, t, dy] of branches) {
+      const by = base - t * h;
+      g.beginPath();
+      g.moveTo(x, by);
+      g.lineTo(x + dx, by + dy);
+      g.stroke();
+    }
+  }
+  tree(176, 62);
+  tree(248, 48);
+  return c;
+})();
+
+// L4: one pre-rendered fog puff strip, 384x44, reused twice (opposite
+// directions). Baked alpha 0.22 composited at 0.9 -> effective <= 0.25.
+const FOG_W = 384, FOG_H = 44;
+const fogStrip = (function buildFogStrip() {
+  const c = makeWorldCanvas(FOG_W, FOG_H);
+  const g = c.getContext("2d");
+  g.fillStyle = "#3A3352";
+  g.globalAlpha = 0.22;
+  // Puffs, kept clear of the strip edges so the wrap is seamless.
+  const puffs = [[46, 22, 34, 10], [100, 14, 40, 8], [160, 26, 48, 11],
+                 [224, 16, 42, 9], [286, 24, 44, 10], [338, 15, 36, 8]];
+  for (const [px, py, rx, ry] of puffs) {
+    g.beginPath();
+    g.ellipse(px, py, rx, ry, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+  return c;
+})();
+
+// L2 bats: tiny slow 'v' shapes riding the far layer with a little extra
+// drift of their own. Non-interactive; frozen when the world is.
+const BATS = [
+  { x0: 0, y0: 150, speed: 0.25, bob: 17 },
+  { x0: 140, y0: 210, speed: 0.18, bob: 23 },
+  { x0: 260, y0: 120, speed: 0.32, bob: 13 },
+];
+
+// L5: graveyard cobble tile, 64x80, scrolls at exactly 1.0x (SCROLL).
+const GROUND_TILE_W = 64;
+const groundTile = (function buildGroundTile() {
+  const c = makeWorldCanvas(GROUND_TILE_W, GROUND_H);
+  const g = c.getContext("2d");
+  g.fillStyle = "#1C1633";
+  g.fillRect(0, 0, GROUND_TILE_W, GROUND_H);
+  // Moonlit rim along the top edge.
+  g.fillStyle = "#4A3F6B";
+  g.fillRect(0, 0, GROUND_TILE_W, 3);
+  // Cobble courses: dark mortar lines with staggered joints.
+  g.strokeStyle = "#0E0A1C";
+  g.lineWidth = 2;
+  for (let row = 0; 22 + row * 18 < GROUND_H; row++) {
+    const y = 22 + row * 18;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(GROUND_TILE_W, y); g.stroke();
+    const off = row % 2 ? 16 : 0;
+    for (let x = off + 16; x < GROUND_TILE_W; x += 32) {
+      g.beginPath(); g.moveTo(x, y - 18); g.lineTo(x, y); g.stroke();
+    }
+  }
+  // A few soil specks (all clear of the tile seam).
+  g.fillStyle = "#0E0A1C";
+  for (const [sx, sy] of [[10, 50], [34, 62], [52, 40], [22, 74], [44, 10]]) {
+    g.fillRect(sx, sy, 3, 2);
+  }
+  return c;
+})();
+
+// Draw a pre-rendered strip tiled left-to-right, wrapped, from offset px.
+function drawWrapped(strip, width, offset, y) {
+  let x = -offset;
+  for (; x < W; x += width) ctx.drawImage(strip, x, y);
+}
+
 // ---------------------------------------------------------------- render
 // Each layer is its own function so the scene theme can be replaced
 // without touching the frame loop. UI elements use the Phase 4 palette:
@@ -354,28 +560,256 @@ function glowText(text, x, y, font, alpha) {
 }
 
 function drawBackground() {
-  // Placeholder: flat dark fill. (Phase 2: sky gradient, moon, stars, parallax.)
-  ctx.fillStyle = "#202028";
-  ctx.fillRect(0, 0, W, H);
+  const wo = game.worldOffset;
+
+  // L1: night sky, #0B0714 -> #1A1030 -> #2D1B4E at the horizon.
+  const sky = ctx.createLinearGradient(0, 0, 0, GROUND_Y);
+  sky.addColorStop(0, "#0B0714");
+  sky.addColorStop(0.55, "#1A1030");
+  sky.addColorStop(1, "#2D1B4E");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, GROUND_Y);
+
+  // L1: static stars.
+  ctx.fillStyle = "#E8E3D0";
+  for (const s of STARS) {
+    ctx.globalAlpha = s.a;
+    ctx.fillRect(s.x, s.y, s.r, s.r);
+  }
+  ctx.globalAlpha = 1;
+
+  // L1: moon with soft halo, drifting left at 0.2x, wrapping fully
+  // off-screen before reappearing (margin M keeps it clear at both ends).
+  const M = MOON_R + 20;
+  const mx = W + M - ((wo * 0.2) % (W + 2 * M));
+  const my = 84;
+  const halo = ctx.createRadialGradient(mx, my, MOON_R, mx, my, 54);
+  halo.addColorStop(0, "rgba(201,196,184,0.20)");
+  halo.addColorStop(1, "rgba(201,196,184,0)");
+  ctx.fillStyle = halo;
+  ctx.beginPath(); ctx.arc(mx, my, 54, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#E8E3D0";
+  ctx.beginPath(); ctx.arc(mx, my, MOON_R, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "rgba(201,196,184,0.5)"; // a couple of craters
+  ctx.beginPath(); ctx.arc(mx - 5, my - 3, 3.4, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(mx + 4, my + 6, 2.3, 0, Math.PI * 2); ctx.fill();
+
+  // L2: far castle skyline at 0.5x, wrapping 432 px strip.
+  drawWrapped(skyStrip, L2_W, (wo * 0.5) % L2_W, GROUND_Y - L2_H);
+
+  // L2 bats: tiny 'v' shapes riding the far layer, slow bob + own drift.
+  ctx.strokeStyle = "#0E0A1C";
+  ctx.lineWidth = 1.5;
+  ctx.lineCap = "round";
+  const bt = game.worldT;
+  for (let i = 0; i < BATS.length; i++) {
+    const b = BATS[i];
+    const span = W + 40;
+    const bx = W + 20 - ((b.x0 + wo * 0.5 + bt * b.speed) % span);
+    const by = b.y0 + Math.sin(bt / b.bob + i * 2.1) * 7;
+    const wing = Math.sin(bt / 6 + i * 1.7) > 0 ? 3.5 : 1; // wing flicker
+    ctx.beginPath();
+    ctx.moveTo(bx - 4, by - wing);
+    ctx.lineTo(bx, by);
+    ctx.lineTo(bx + 4, by - wing);
+    ctx.stroke();
+  }
+
+  // L3: near battlements + dead trees at 1.0x, wrapping 384 px strip.
+  drawWrapped(nearStrip, L3_W, wo % L3_W, GROUND_Y - L3_H);
+
+  // L4: two fog bands at 0.75x, opposite directions, lower third only
+  // (soft puffs, low alpha — never a solid bar, never across mid-screen).
+  ctx.globalAlpha = 0.9;
+  drawWrapped(fogStrip, FOG_W, (wo * 0.75) % FOG_W, 344);
+  drawWrapped(fogStrip, FOG_W, (FOG_W - ((wo * 0.75) % FOG_W)) % FOG_W, 396);
+  ctx.globalAlpha = 1;
+
+  // Lightning: full-screen white flash, 2-4 frames, fading each frame.
+  if (game.boltFrames > 0) {
+    const a = (game.boltFrames * 0.045).toFixed(3); // 0.18 -> 0.045
+    ctx.fillStyle = "rgba(226,232,255," + a + ")";
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+// Castle tower art (Phase 2). Collision boxes are unchanged: the upper box
+// is (x, 0, TOWER_W, topH) and the lower box (x, botY, TOWER_W, ...). All
+// decorative pixels stay inside those boxes EXCEPT the 5 px crenellated
+// teeth on the gap-adjacent ends, which extend into the gap. 5 px is small
+// against the crow's 15% hitbox inset (3.6 px vertical) so the death still
+// reads fair: the crow visually touches a tooth just before the hitbox trips.
+function drawTowerBody(x, y0, y1) {
+  const h = y1 - y0;
+  if (h <= 0) return;
+  ctx.fillStyle = "#1C1633"; // stone fill
+  ctx.fillRect(x, y0, TOWER_W, h);
+  // Moonlit edge on the lit (left) side.
+  ctx.fillStyle = "#4A3F6B";
+  ctx.fillRect(x, y0, 3, h);
+  // Subtle vertical shading: lit left fading into shadow on the right.
+  const sh = ctx.createLinearGradient(x, 0, x + TOWER_W, 0);
+  sh.addColorStop(0, "rgba(74,63,107,0.15)");
+  sh.addColorStop(0.45, "rgba(11,7,20,0)");
+  sh.addColorStop(1, "rgba(11,7,20,0.30)");
+  ctx.fillStyle = sh;
+  ctx.fillRect(x, y0, TOWER_W, h);
+  // Dark mortar courses with staggered joints (inside the body only).
+  ctx.strokeStyle = "#0E0A1C";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let y = y0 + 20, row = 0; y < y1 - 6; y += 20, row++) {
+    ctx.moveTo(x + 1, y);
+    ctx.lineTo(x + TOWER_W - 1, y);
+    for (let vx = x + 8 + (row % 2 ? 17 : 0); vx < x + TOWER_W - 4; vx += 34) {
+      ctx.moveTo(vx, Math.max(y0 + 2, y - 17));
+      ctx.lineTo(vx, y);
+    }
+  }
+  ctx.stroke();
+}
+
+// Crenellated cap on the gap-adjacent end of a tower. dir=+1: teeth extend
+// DOWN from yEdge (upper tower, yEdge = topH); dir=-1: teeth extend UP from
+// yEdge (lower tower, yEdge = botY). A 2 px moonlit lip sits just inside the
+// collision box along the gap end.
+function drawTowerTeeth(t, yEdge, dir) {
+  const h = 5; // extension beyond the collision box, kept small (see note)
+  ctx.fillStyle = "#1C1633";
+  for (let cx = t.x + 2; cx + 9 <= t.x + TOWER_W - 1; cx += 16) {
+    ctx.fillRect(cx, dir > 0 ? yEdge : yEdge - h, 9, h);
+  }
+  ctx.fillStyle = "#4A3F6B";
+  ctx.fillRect(t.x, dir > 0 ? yEdge - 2 : yEdge, TOWER_W, 2);
+}
+
+// Occasional flickering lantern: ~1 in 3 towers (t.seed), always on the
+// stone body at least 18 px away from the gap edge — never in the corridor.
+function drawTowerLantern(t, now) {
+  if (t.seed >= 0.34) return; // most towers stay dark
+  const phase = t.seed * 40;
+  // Occasional dropout blink, plus a slow warm pulse in between.
+  if (Math.floor(now / 420 + phase) % 5 === 0) return;
+  const a = 0.35 + 0.55 * (Math.sin(now / 90 + phase) * 0.5 + 0.5);
+  let lx, ly, ok;
+  if (t.seed < 0.17) {
+    lx = t.x + 14; ly = t.topH - 20;   // upper tower body
+    ok = t.topH > 46;
+  } else {
+    lx = t.x + TOWER_W - 14; ly = t.botY + 20; // lower tower body
+    ok = t.botY + 28 < GROUND_Y;
+  }
+  if (!ok) return;
+  ctx.save();
+  ctx.fillStyle = "#E8A54C";
+  ctx.globalAlpha = a * 0.25; // soft glow
+  ctx.beginPath(); ctx.arc(lx, ly, 6, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = a;        // the flame dot
+  ctx.beginPath(); ctx.arc(lx, ly, 2.2, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
 }
 
 function drawTowers() {
-  ctx.fillStyle = "#4a4a55";
+  const now = performance.now();
   for (const t of game.towers) {
     if (t.x > W || t.x + TOWER_W < 0) continue;
-    ctx.fillRect(t.x, 0, TOWER_W, t.topH);
-    ctx.fillRect(t.x, t.botY, TOWER_W, GROUND_Y - t.botY);
+    // Upper tower: body from the top edge down to the gap, crenellated cap
+    // on its bottom (gap) end.
+    drawTowerBody(t.x, 0, t.topH);
+    drawTowerTeeth(t, t.topH, 1);
+    // Lower tower: body from the gap down to the ground, crenellated cap on
+    // its top (gap) end.
+    drawTowerBody(t.x, t.botY, GROUND_Y);
+    drawTowerTeeth(t, t.botY, -1);
+    drawTowerLantern(t, now);
   }
 }
 
 function drawGround() {
-  // Placeholder: flat strip with a scrolling stripe so the scroll is visible.
-  ctx.fillStyle = "#33333c";
-  ctx.fillRect(0, GROUND_Y, W, GROUND_H);
-  ctx.fillStyle = "#3d3d48";
-  const off = -game.groundOffset;
-  for (let x = off % 64 - 64; x < W; x += 64) {
-    ctx.fillRect(x, GROUND_Y, 32, GROUND_H);
+  // L5: graveyard cobble tile at exactly SCROLL (1.0x), wrapping 64 px tile.
+  drawWrapped(groundTile, GROUND_TILE_W, game.worldOffset % GROUND_TILE_W, GROUND_Y);
+}
+
+// Crow art (Phase 2). Three frames — 0 wing up, 1 wings level, 2 tucked
+// down-back — share an identical body/anchor (CROW_W x CROW_H, origin at
+// the sprite center) so only the wing silhouette sweeps. The bright green
+// eye is the playability anchor; the #8F8A9E rim light on the top edge is
+// what separates the dark body from the dark mid-sky.
+function drawCrowBody(frame, dead) {
+  const BODY = "#2B2B35";
+  const RIM = "#8F8A9E";
+  // Wing first, behind the body.
+  ctx.fillStyle = BODY;
+  ctx.beginPath();
+  if (frame === 0) {
+    // Wing up: sweeps up and back over the body.
+    ctx.moveTo(0, -2);
+    ctx.quadraticCurveTo(-6, -14, -15, -11);
+    ctx.quadraticCurveTo(-8, -1, -1, 1);
+  } else if (frame === 1) {
+    // Wings level: flat back sweep.
+    ctx.moveTo(0, -1);
+    ctx.quadraticCurveTo(-10, -7, -15, -3);
+    ctx.quadraticCurveTo(-9, 1, -1, 2);
+  } else {
+    // Tucked: folded down and back, smallest silhouette.
+    ctx.moveTo(-2, 0);
+    ctx.quadraticCurveTo(-11, 2, -13, 8);
+    ctx.quadraticCurveTo(-7, 5, -1, 4);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  // Body + head (identical every frame).
+  ctx.beginPath();
+  ctx.ellipse(-1, 2, 11, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(8, -4, 6.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Beak (open jaws on the death frame).
+  if (dead) {
+    ctx.beginPath();
+    ctx.moveTo(12, -6.5); ctx.lineTo(15.5, -9); ctx.lineTo(13, -3);
+    ctx.closePath(); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(12, -3); ctx.lineTo(15.5, 0.5); ctx.lineTo(12.5, -1);
+    ctx.closePath(); ctx.fill();
+  } else {
+    ctx.beginPath();
+    ctx.moveTo(13, -5.5); ctx.lineTo(16, -4); ctx.lineTo(13, -2);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // Rim light along the top edge (moonlight from above).
+  ctx.strokeStyle = RIM;
+  ctx.lineWidth = 1.5;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.ellipse(8, -4, 6.5, 6.5, 0, -2.6, -0.5);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.ellipse(-1, 2, 11, 8, 0, -2.9, -0.9);
+  ctx.stroke();
+
+  // Eye.
+  if (dead) {
+    // X eye for the death frame.
+    ctx.strokeStyle = "#E8E3D0";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(8, -6); ctx.lineTo(12, -2);
+    ctx.moveTo(12, -6); ctx.lineTo(8, -2);
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = "#7CFC8B";
+    ctx.shadowColor = "#7CFC8B";
+    ctx.shadowBlur = 3;
+    ctx.beginPath();
+    ctx.arc(9.5, -4.5, 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
   }
 }
 
@@ -384,8 +818,10 @@ function drawCrow() {
   const c = game.crow;
   ctx.translate(CROW_X + CROW_W / 2, c.y + CROW_H / 2);
   ctx.rotate(c.rot);
-  ctx.fillStyle = "#c9c9c9"; // grey rectangle crow
-  ctx.fillRect(-CROW_W / 2, -CROW_H / 2, CROW_W, CROW_H);
+  // DYING/GAME OVER render the death frame (X-eye + open beak) while the
+  // existing 90-degree tumble rotation keeps applying from update().
+  const dead = game.state === ST_DYING || game.state === ST_GAMEOVER;
+  drawCrowBody(dead ? 2 : game.crowFrame, dead);
   ctx.restore();
 }
 

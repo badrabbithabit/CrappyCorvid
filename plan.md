@@ -70,14 +70,14 @@ Gravity + one flap impulse. +1 per tower passed. Brutally simple, dark, spooky.
 - [x] AABB collision with 15% inset hitbox, pipe-pass scoring, best score in localStorage
 - [x] Keyboard (space) + pointer input; crude placeholder graphics only
 
-## [ ] Phase 2 — Theme
-- [ ] Palette applied: sky gradient, moon, stars
-- [ ] 5-layer parallax: skyline 0.5×, battlements 1×, fog strips 0.75×, ground 1×
-- [ ] Castle tower sprites (procedural: stone fill, moonlit edge, crenellations, occasional flickering lantern)
-- [ ] Crow: 3-frame path-drawn animation, rim light + green eye dot, death tumble
-- [ ] Graveyard ground tile
-- [ ] Bats (2–3, L2), lightning flash (15–25 s cadence, 2–4 frames, not in first 10 s)
-- [ ] Contrast check: crow readable at all gap positions
+## [x] Phase 2 — Theme
+- [x] Palette applied: sky gradient, moon, stars
+- [x] 5-layer parallax: skyline 0.5×, battlements 1×, fog strips 0.75×, ground 1×
+- [x] Castle tower sprites (procedural: stone fill, moonlit edge, crenellations, occasional flickering lantern)
+- [x] Crow: 3-frame path-drawn animation, rim light + green eye dot, death tumble
+- [x] Graveyard ground tile
+- [x] Bats (2–3, L2), lightning flash (15–25 s cadence, 2–4 frames, not in first 10 s)
+- [x] Contrast check: crow readable at all gap positions
 
 ## [x] Phase 3 — Audio (procedural WebAudio)
 - [x] Flap swish, score chime (bone-like), hit thud + sting, die whistle
