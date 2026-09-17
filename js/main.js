@@ -277,8 +277,8 @@ function update() {
       if (game.runT >= 600 && game.runT >= game.nextBoltAt) {
         game.boltFrames = 2 + Math.floor(Math.random() * 3); // 2..4 frames
         game.nextBoltAt = game.runT + 900 + Math.floor(Math.random() * 601);
-        // audio.js does not expose a thunder hook yet — call it if one is
-        // added to the CrowAudio API (ambient self-schedules thunder for now).
+        // Thunder paired with the flash (ambient self-scheduling of thunder
+        // was removed from audio.js so sound and flash never drift apart).
         if (typeof CrowAudio.thunder === "function") CrowAudio.thunder();
       }
       c.vy = Math.min(c.vy + GRAVITY, TERMINAL_VY);
@@ -321,6 +321,10 @@ function update() {
       // World keeps scrolling until the crow hits the ground.
       game.worldOffset += SCROLL;
       game.worldT++;
+      // Towers must move in lockstep with the ground/parallax (no new
+      // spawns on death) — otherwise the world slides under frozen towers.
+      for (const t of game.towers) t.x -= SCROLL;
+      if (game.towers.length && game.towers[0].x + TOWER_W < 0) game.towers.shift();
       // Crow tumbles to the ground before the game-over panel.
       c.vy = Math.min(c.vy + GRAVITY, TERMINAL_VY);
       c.y += c.vy;
@@ -370,7 +374,8 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   CrowAudio.unlock();
-  onInput();
+  // Ignore right/middle clicks and non-primary pointers (extra fingers).
+  if (e.isPrimary && e.button === 0) onInput();
 });
 
 // ---------------------------------------------------------------- world art
@@ -1019,7 +1024,7 @@ function frame(now) {
       acc -= STEP;
     }
   }
-  CrowAudio.tick(); // ambient scheduler (thunder / far caw)
+  if (!paused) CrowAudio.tick(); // ambient scheduler (far caw) — frozen with the game
   draw();
   if (paused) drawPauseOverlay();
   requestAnimationFrame(frame);

@@ -24,7 +24,6 @@ const CrowAudio = (() => {
   let sfx = null;           // SFX bus
   let amb = null;           // ambient bus (~0.1)
   let noiseBuf = null;      // shared 2 s white-noise buffer
-  let nextThunder = 0;      // ctx.currentTime when the next roll happens
   let nextCaw = 0;
   let supported = !!(typeof window !== "undefined" &&
     (window.AudioContext || window.webkitAudioContext));
@@ -64,7 +63,6 @@ const CrowAudio = (() => {
         const d = noiseBuf.getChannelData(0);
         for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
 
-        nextThunder = ac.currentTime + rand(6, 15);   // first one a bit sooner
         nextCaw = ac.currentTime + rand(15, 30);
         startWind();
       }
@@ -224,7 +222,8 @@ const CrowAudio = (() => {
   function tick() {
     if (!ac || ac.state !== "running") return;
     const now = ac.currentTime;
-    if (now >= nextThunder) { thunder(); nextThunder = now + rand(20, 40); }
+    // Thunder is NOT self-scheduled here: the game triggers it in sync with
+    // the lightning flash via the exported thunder() hook.
     if (now >= nextCaw) { farCaw(); nextCaw = now + rand(15, 30); }
   }
 
@@ -247,5 +246,5 @@ const CrowAudio = (() => {
     return muted;
   }
 
-  return { unlock, tick, flap, score, hit, die, toggleMute, isMuted };
+  return { unlock, tick, flap, score, hit, die, thunder, toggleMute, isMuted };
 })();
